@@ -7,7 +7,7 @@ import {
   insertCardSchema,
   insertCommentSchema,
   insertColumnSchema,
-} from "@shared/schema";
+} from "../shared/schema";
 import { z } from "zod";
 import { placeOutboundCall, nowHHMMInTimezone, twilioReady } from "./calls";
 

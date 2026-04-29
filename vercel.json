@@ -5,7 +5,8 @@
   "framework": null,
   "functions": {
     "api/[[...path]].ts": {
-      "includeFiles": "server/**,shared/**"
+      "includeFiles": "server/**,shared/**",
+      "maxDuration": 30
     }
   },
   "rewrites": [
