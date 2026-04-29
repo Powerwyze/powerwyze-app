@@ -2,14 +2,14 @@ import type { Express, Request, Response, NextFunction } from "express";
 import type { Server } from "node:http";
 import session from "express-session";
 import createMemoryStore from "memorystore";
-import { storage, stripPwd, seedIfEmpty, bootstrap } from "./storage";
+import { storage, stripPwd, seedIfEmpty, bootstrap } from "./storage.js";
 import {
   insertCardSchema,
   insertCommentSchema,
   insertColumnSchema,
-} from "../shared/schema";
+} from "../shared/schema.js";
 import { z } from "zod";
-import { placeOutboundCall, nowHHMMInTimezone, twilioReady } from "./calls";
+import { placeOutboundCall, nowHHMMInTimezone, twilioReady } from "./calls.js";
 
 declare module "express-session" {
   interface SessionData {

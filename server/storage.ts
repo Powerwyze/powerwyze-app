@@ -14,7 +14,7 @@ import type {
   InsertComment,
   Call,
   InsertCall,
-} from "../shared/schema";
+} from "../shared/schema.js";
 
 // ---------------------------------------------------------------------------
 // Supabase client — uses REST/PostgREST, no direct Postgres connection needed.

@@ -1,5 +1,5 @@
 import twilio from "twilio";
-import { storage } from "./storage";
+import { storage } from "./storage.js";
 
 const accountSid = process.env.TWILIO_ACCOUNT_SID;
 const authToken = process.env.TWILIO_AUTH_TOKEN;
