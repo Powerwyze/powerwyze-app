@@ -1,7 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import type { Server } from "node:http";
 import session from "express-session";
-import connectPgSimple from "connect-pg-simple";
+import createMemoryStore from "memorystore";
 import { storage, stripPwd, seedIfEmpty, bootstrap } from "./storage";
 import {
   insertCardSchema,
@@ -29,21 +29,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.set("trust proxy", 1);
 
-  const PgStore = connectPgSimple(session);
+  // NOTE: MemoryStore loses sessions on serverless cold starts. This is a known
+  // limitation — to fix it, swap in a real session store (e.g. @supabase/auth or
+  // a Redis-backed store). For this internal app it's acceptable.
+  const MemoryStore = createMemoryStore(session);
   app.use(
     session({
+      store: new MemoryStore({ checkPeriod: 86400000 }), // prune expired every 24h
       secret: process.env.SESSION_SECRET || "powerwyze-dev-secret-change-me",
       resave: false,
       saveUninitialized: false,
-      store: new PgStore({
-        conObject: { connectionString: process.env.POSTGRES_URL },
-        createTableIfMissing: true,
-      }),
       cookie: {
         httpOnly: true,
-        sameSite: "lax",
-        maxAge: 30 * 24 * 60 * 60 * 1000,
         secure: process.env.NODE_ENV === "production",
+        maxAge: 7 * 24 * 60 * 60 * 1000,
       },
     }),
   );
@@ -106,7 +105,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/boards/:slug", requireAuth, async (req, res) => {
     const board = await storage.getBoardBySlug(req.params.slug as string);
     if (!board) return res.status(404).json({ message: "Board not found" });
-    if (board.kind === "personal" && board.ownerId !== req.session.userId) {
+    if (board.kind === "personal" && board.owner_id !== req.session.userId) {
       return res.status(403).json({ message: "Forbidden" });
     }
     const [columns, cards] = await Promise.all([
@@ -125,7 +124,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!parsed.success) return res.status(400).json({ message: "Invalid card", errors: parsed.error.flatten() });
     const board = await storage.getBoard(parsed.data.boardId);
     if (!board) return res.status(404).json({ message: "Board not found" });
-    if (board.kind === "personal" && board.ownerId !== req.session.userId) {
+    if (board.kind === "personal" && board.owner_id !== req.session.userId) {
       return res.status(403).json({ message: "Forbidden" });
     }
     const card = await storage.createCard(parsed.data);
@@ -225,7 +224,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const ctx: any[] = [];
     for (const b of userBoards) {
       const cards = await storage.listCards(b.id);
-      ctx.push({ board: b.name, cards: cards.slice(0, 8).map(c => ({ title: c.title, priority: c.priority, dueDate: c.dueDate })) });
+      ctx.push({ board: b.name, cards: cards.slice(0, 8).map(c => ({ title: c.title, priority: c.priority, dueDate: c.due_date })) });
     }
     const reply = await runVoiceAgentTurn({ user: me, kind: "standup", history: history || [], boards: ctx });
     res.json({ reply });
@@ -309,8 +308,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!u.phone) continue;
       const localHHMM = nowHHMMInTimezone(u.timezone || "America/New_York");
       let kind: "standup" | "eod" | null = null;
-      if (localHHMM === u.standupTime) kind = "standup";
-      else if (localHHMM === u.eodTime) kind = "eod";
+      if (localHHMM === u.standup_time) kind = "standup";
+      else if (localHHMM === u.eod_time) kind = "eod";
       if (!kind) continue;
       try {
         const out = await placeOutboundCall({ userId: u.id, toPhone: u.phone, kind, baseUrl });
@@ -404,7 +403,7 @@ async function runChatAgent({ board, cols, cards, users, message, userId }: any)
   const me = users.find((u: any) => u.id === userId);
   const summary = cols
     .map((c: any) => {
-      const colCards = cards.filter((cc: any) => cc.columnId === c.id);
+      const colCards = cards.filter((cc: any) => cc.column_id === c.id);
       return `${c.name} (${colCards.length}): ${colCards.map((cc: any) => `"${cc.title}"`).join(", ") || "—"}`;
     })
     .join("\n");

@@ -1,124 +1,222 @@
-import {
-  users,
-  boards,
-  columns,
-  cards,
-  comments,
-  calls,
-  type User,
-  type InsertUser,
-  type SafeUser,
-  type Board,
-  type InsertBoard,
-  type Column,
-  type InsertColumn,
-  type Card,
-  type InsertCard,
-  type Comment,
-  type InsertComment,
-  type Call,
-  type InsertCall,
-} from "@shared/schema";
-import { drizzle } from "drizzle-orm/vercel-postgres";
-import { sql as vercelSql } from "@vercel/postgres";
-import { eq, and, or, asc, desc, isNull, inArray } from "drizzle-orm";
+import { createClient } from "@supabase/supabase-js";
 import bcrypt from "bcryptjs";
-
-export const db = drizzle(vercelSql);
+import type {
+  User,
+  InsertUser,
+  SafeUser,
+  Board,
+  InsertBoard,
+  Column,
+  InsertColumn,
+  Card,
+  InsertCard,
+  Comment,
+  InsertComment,
+  Call,
+  InsertCall,
+} from "@shared/schema";
 
 // ---------------------------------------------------------------------------
-// Bootstrap — creates tables in Postgres if they don't exist.
-// Runs once per cold-start (guarded by the `ready` promise in the handler).
+// Supabase client — uses REST/PostgREST, no direct Postgres connection needed.
+// ---------------------------------------------------------------------------
+const supabase = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_ANON_KEY!,
+  { auth: { persistSession: false } }
+);
+
+// ---------------------------------------------------------------------------
+// No-op bootstrap — schema is managed via Supabase MCP.
 // ---------------------------------------------------------------------------
 export async function bootstrap() {
-  await vercelSql`
-    CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
-      email TEXT NOT NULL UNIQUE,
-      name TEXT NOT NULL,
-      password TEXT NOT NULL,
-      phone TEXT,
-      standup_time TEXT DEFAULT '09:00',
-      eod_time TEXT DEFAULT '17:00',
-      timezone TEXT DEFAULT 'America/New_York',
-      created_at TIMESTAMP DEFAULT NOW()
-    )
-  `;
-
-  await vercelSql`
-    CREATE TABLE IF NOT EXISTS boards (
-      id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      slug TEXT NOT NULL UNIQUE,
-      description TEXT,
-      kind TEXT NOT NULL,
-      owner_id INTEGER REFERENCES users(id),
-      shared BOOLEAN NOT NULL DEFAULT FALSE,
-      created_at TIMESTAMP DEFAULT NOW()
-    )
-  `;
-
-  await vercelSql`
-    CREATE TABLE IF NOT EXISTS columns (
-      id SERIAL PRIMARY KEY,
-      board_id INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
-      name TEXT NOT NULL,
-      position INTEGER NOT NULL
-    )
-  `;
-
-  await vercelSql`
-    CREATE TABLE IF NOT EXISTS cards (
-      id SERIAL PRIMARY KEY,
-      board_id INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
-      column_id INTEGER NOT NULL REFERENCES columns(id) ON DELETE CASCADE,
-      title TEXT NOT NULL,
-      description TEXT,
-      assignee_id INTEGER REFERENCES users(id),
-      priority TEXT DEFAULT 'medium',
-      tags TEXT DEFAULT '[]',
-      due_date TIMESTAMP,
-      position INTEGER NOT NULL DEFAULT 0,
-      source TEXT DEFAULT 'manual',
-      created_at TIMESTAMP DEFAULT NOW(),
-      updated_at TIMESTAMP DEFAULT NOW()
-    )
-  `;
-
-  await vercelSql`
-    CREATE TABLE IF NOT EXISTS comments (
-      id SERIAL PRIMARY KEY,
-      card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
-      author_id INTEGER NOT NULL REFERENCES users(id),
-      body TEXT NOT NULL,
-      created_at TIMESTAMP DEFAULT NOW()
-    )
-  `;
-
-  await vercelSql`
-    CREATE TABLE IF NOT EXISTS calls (
-      id SERIAL PRIMARY KEY,
-      user_id INTEGER NOT NULL REFERENCES users(id),
-      kind TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'scheduled',
-      scheduled_for TIMESTAMP NOT NULL,
-      started_at TIMESTAMP,
-      ended_at TIMESTAMP,
-      twilio_call_sid TEXT,
-      elevenlabs_conversation_id TEXT,
-      transcript TEXT,
-      summary TEXT,
-      mood TEXT,
-      action_items_created INTEGER DEFAULT 0
-    )
-  `;
+  // no-op: schema is already applied via the Supabase MCP
 }
 
+// ---------------------------------------------------------------------------
+// Strip password helper
+// ---------------------------------------------------------------------------
 const stripPwd = (u: User): SafeUser => {
   const { password, ...rest } = u;
   return rest;
 };
 
+// ---------------------------------------------------------------------------
+// Row mappers: snake_case DB rows → camelCase-like typed objects
+// We keep the DB shape (snake_case) on the returned types since we updated
+// shared/schema.ts to use snake_case fields. These mappers just ensure
+// the data is the right shape and handle JSON parsing for tags.
+// ---------------------------------------------------------------------------
+function toUser(row: any): User {
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    password: row.password,
+    phone: row.phone ?? null,
+    standup_time: row.standup_time ?? null,
+    eod_time: row.eod_time ?? null,
+    timezone: row.timezone ?? null,
+    created_at: row.created_at ?? null,
+  };
+}
+
+function toBoard(row: any): Board {
+  return {
+    id: row.id,
+    name: row.name,
+    slug: row.slug,
+    description: row.description ?? null,
+    kind: row.kind,
+    owner_id: row.owner_id ?? null,
+    shared: row.shared ?? false,
+    created_at: row.created_at ?? null,
+  };
+}
+
+function toColumn(row: any): Column {
+  return {
+    id: row.id,
+    board_id: row.board_id,
+    name: row.name,
+    position: row.position,
+  };
+}
+
+function toCard(row: any): Card {
+  return {
+    id: row.id,
+    board_id: row.board_id,
+    column_id: row.column_id,
+    title: row.title,
+    description: row.description ?? null,
+    assignee_id: row.assignee_id ?? null,
+    priority: row.priority ?? null,
+    tags: row.tags ?? "[]",
+    due_date: row.due_date ?? null,
+    position: row.position ?? 0,
+    source: row.source ?? null,
+    created_at: row.created_at ?? null,
+    updated_at: row.updated_at ?? null,
+  };
+}
+
+function toComment(row: any): Comment {
+  return {
+    id: row.id,
+    card_id: row.card_id,
+    author_id: row.author_id,
+    body: row.body,
+    created_at: row.created_at ?? null,
+  };
+}
+
+function toCall(row: any): Call {
+  return {
+    id: row.id,
+    user_id: row.user_id,
+    kind: row.kind,
+    status: row.status,
+    scheduled_for: row.scheduled_for,
+    started_at: row.started_at ?? null,
+    ended_at: row.ended_at ?? null,
+    twilio_call_sid: row.twilio_call_sid ?? null,
+    elevenlabs_conversation_id: row.elevenlabs_conversation_id ?? null,
+    transcript: row.transcript ?? null,
+    summary: row.summary ?? null,
+    mood: row.mood ?? null,
+    action_items_created: row.action_items_created ?? null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Insert/update mappers: camelCase input → snake_case DB columns
+// ---------------------------------------------------------------------------
+function fromBoard(input: InsertBoard) {
+  return {
+    name: input.name,
+    slug: input.slug,
+    description: input.description ?? null,
+    kind: input.kind,
+    owner_id: input.ownerId ?? null,
+    shared: input.shared ?? false,
+  };
+}
+
+function fromColumn(input: InsertColumn) {
+  return {
+    board_id: input.boardId,
+    name: input.name,
+    position: input.position,
+  };
+}
+
+function fromCard(input: Partial<InsertCard>) {
+  const row: any = {};
+  if (input.boardId !== undefined) row.board_id = input.boardId;
+  if (input.columnId !== undefined) row.column_id = input.columnId;
+  if (input.title !== undefined) row.title = input.title;
+  if (input.description !== undefined) row.description = input.description ?? null;
+  if (input.assigneeId !== undefined) row.assignee_id = input.assigneeId ?? null;
+  if (input.priority !== undefined) row.priority = input.priority ?? null;
+  if (input.tags !== undefined) {
+    if (Array.isArray(input.tags)) {
+      row.tags = JSON.stringify(input.tags);
+    } else {
+      row.tags = input.tags ?? "[]";
+    }
+  }
+  if (input.dueDate !== undefined) {
+    if (input.dueDate instanceof Date) {
+      row.due_date = input.dueDate.toISOString();
+    } else {
+      row.due_date = input.dueDate ?? null;
+    }
+  }
+  if (input.position !== undefined) row.position = input.position;
+  if (input.source !== undefined) row.source = input.source ?? null;
+  return row;
+}
+
+function fromComment(input: InsertComment) {
+  return {
+    card_id: input.cardId,
+    author_id: input.authorId,
+    body: input.body,
+  };
+}
+
+function fromCall(input: Partial<InsertCall>) {
+  const row: any = {};
+  if (input.userId !== undefined) row.user_id = input.userId;
+  if (input.kind !== undefined) row.kind = input.kind;
+  if (input.status !== undefined) row.status = input.status;
+  if (input.scheduledFor !== undefined) {
+    row.scheduled_for = input.scheduledFor instanceof Date
+      ? input.scheduledFor.toISOString()
+      : input.scheduledFor;
+  }
+  if (input.startedAt !== undefined) {
+    row.started_at = input.startedAt instanceof Date
+      ? input.startedAt.toISOString()
+      : (input.startedAt ?? null);
+  }
+  if (input.endedAt !== undefined) {
+    row.ended_at = input.endedAt instanceof Date
+      ? input.endedAt.toISOString()
+      : (input.endedAt ?? null);
+  }
+  if (input.twilioCallSid !== undefined) row.twilio_call_sid = input.twilioCallSid ?? null;
+  if (input.elevenlabsConversationId !== undefined) row.elevenlabs_conversation_id = input.elevenlabsConversationId ?? null;
+  if (input.transcript !== undefined) row.transcript = input.transcript ?? null;
+  if (input.summary !== undefined) row.summary = input.summary ?? null;
+  if (input.mood !== undefined) row.mood = input.mood ?? null;
+  if (input.actionItemsCreated !== undefined) row.action_items_created = input.actionItemsCreated ?? null;
+  return row;
+}
+
+// ---------------------------------------------------------------------------
+// IStorage interface
+// ---------------------------------------------------------------------------
 export interface IStorage {
   // users
   getUser(id: number): Promise<User | undefined>;
@@ -157,40 +255,84 @@ export interface IStorage {
   updateCall(id: number, patch: Partial<InsertCall>): Promise<Call | undefined>;
 }
 
+// ---------------------------------------------------------------------------
+// DatabaseStorage — Supabase JS client (REST/PostgREST)
+// ---------------------------------------------------------------------------
 export class DatabaseStorage implements IStorage {
   // ---------- users ----------
-  async getUser(id: number) {
-    const rows = await db.select().from(users).where(eq(users.id, id)).limit(1);
-    return rows[0];
+  async getUser(id: number): Promise<User | undefined> {
+    const { data } = await supabase
+      .from("users")
+      .select("*")
+      .eq("id", id)
+      .maybeSingle();
+    return data ? toUser(data) : undefined;
   }
-  async getUserByEmail(email: string) {
-    const rows = await db.select().from(users).where(eq(users.email, email.toLowerCase())).limit(1);
-    return rows[0];
+
+  async getUserByEmail(email: string): Promise<User | undefined> {
+    const { data } = await supabase
+      .from("users")
+      .select("*")
+      .eq("email", email.toLowerCase())
+      .maybeSingle();
+    return data ? toUser(data) : undefined;
   }
-  async listUsers() {
-    const all = await db.select().from(users);
-    return all.map(stripPwd);
+
+  async listUsers(): Promise<SafeUser[]> {
+    const { data } = await supabase.from("users").select("*");
+    return (data ?? []).map((r) => stripPwd(toUser(r)));
   }
-  async createUser(input: InsertUser) {
+
+  async createUser(input: InsertUser): Promise<User> {
     const hashed = await bcrypt.hash(input.password, 10);
-    const rows = await db
-      .insert(users)
-      .values({ ...input, email: input.email.toLowerCase(), password: hashed })
-      .returning();
-    return rows[0];
+    const { data, error } = await supabase
+      .from("users")
+      .insert({
+        email: input.email.toLowerCase(),
+        name: input.name,
+        password: hashed,
+        phone: input.phone ?? null,
+        standup_time: input.standupTime ?? "09:00",
+        eod_time: input.eodTime ?? "17:00",
+        timezone: input.timezone ?? "America/New_York",
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    return toUser(data);
   }
-  async updateUser(id: number, patch: Partial<InsertUser>) {
+
+  async updateUser(id: number, patch: Partial<InsertUser>): Promise<SafeUser | undefined> {
     const { password, ...rest } = patch;
-    const rows = await db.update(users).set(rest).where(eq(users.id, id)).returning();
-    const updated = rows[0];
-    return updated ? stripPwd(updated) : undefined;
+    // Map camelCase fields to snake_case
+    const update: any = {};
+    if (rest.name !== undefined) update.name = rest.name;
+    if (rest.phone !== undefined) update.phone = rest.phone ?? null;
+    if (rest.standupTime !== undefined) update.standup_time = rest.standupTime;
+    if (rest.eodTime !== undefined) update.eod_time = rest.eodTime;
+    if (rest.timezone !== undefined) update.timezone = rest.timezone;
+    if (rest.email !== undefined) update.email = rest.email.toLowerCase();
+
+    const { data } = await supabase
+      .from("users")
+      .update(update)
+      .eq("id", id)
+      .select()
+      .maybeSingle();
+    return data ? stripPwd(toUser(data)) : undefined;
   }
-  async changePassword(id: number, newPassword: string) {
+
+  async changePassword(id: number, newPassword: string): Promise<boolean> {
     const hashed = await bcrypt.hash(newPassword, 10);
-    const rows = await db.update(users).set({ password: hashed }).where(eq(users.id, id)).returning();
-    return rows.length > 0;
+    const { data } = await supabase
+      .from("users")
+      .update({ password: hashed })
+      .eq("id", id)
+      .select();
+    return (data ?? []).length > 0;
   }
-  async verifyPassword(email: string, plain: string) {
+
+  async verifyPassword(email: string, plain: string): Promise<User | null> {
     const u = await this.getUserByEmail(email);
     if (!u) return null;
     const ok = await bcrypt.compare(plain, u.password);
@@ -198,183 +340,180 @@ export class DatabaseStorage implements IStorage {
   }
 
   // ---------- boards ----------
-  async listBoardsForUser(userId: number) {
-    return db
+  async listBoardsForUser(userId: number): Promise<Board[]> {
+    const { data } = await supabase
+      .from("boards")
+      .select("*")
+      .or(`shared.eq.true,owner_id.eq.${userId}`)
+      .order("id");
+    return (data ?? []).map(toBoard);
+  }
+
+  async getBoardBySlug(slug: string): Promise<Board | undefined> {
+    const { data } = await supabase
+      .from("boards")
+      .select("*")
+      .eq("slug", slug)
+      .maybeSingle();
+    return data ? toBoard(data) : undefined;
+  }
+
+  async getBoard(id: number): Promise<Board | undefined> {
+    const { data } = await supabase
+      .from("boards")
+      .select("*")
+      .eq("id", id)
+      .maybeSingle();
+    return data ? toBoard(data) : undefined;
+  }
+
+  async createBoard(input: InsertBoard): Promise<Board> {
+    const { data, error } = await supabase
+      .from("boards")
+      .insert(fromBoard(input))
       .select()
-      .from(boards)
-      .where(or(eq(boards.shared, true), eq(boards.ownerId, userId)))
-      .orderBy(asc(boards.id));
-  }
-  async getBoardBySlug(slug: string) {
-    const rows = await db.select().from(boards).where(eq(boards.slug, slug)).limit(1);
-    return rows[0];
-  }
-  async getBoard(id: number) {
-    const rows = await db.select().from(boards).where(eq(boards.id, id)).limit(1);
-    return rows[0];
-  }
-  async createBoard(input: InsertBoard) {
-    const rows = await db.insert(boards).values(input).returning();
-    return rows[0];
+      .single();
+    if (error) throw error;
+    return toBoard(data);
   }
 
   // ---------- columns ----------
-  async listColumns(boardId: number) {
-    return db
-      .select()
-      .from(columns)
-      .where(eq(columns.boardId, boardId))
-      .orderBy(asc(columns.position));
+  async listColumns(boardId: number): Promise<Column[]> {
+    const { data } = await supabase
+      .from("columns")
+      .select("*")
+      .eq("board_id", boardId)
+      .order("position");
+    return (data ?? []).map(toColumn);
   }
-  async createColumn(input: InsertColumn) {
-    const rows = await db.insert(columns).values(input).returning();
-    return rows[0];
+
+  async createColumn(input: InsertColumn): Promise<Column> {
+    const { data, error } = await supabase
+      .from("columns")
+      .insert(fromColumn(input))
+      .select()
+      .single();
+    if (error) throw error;
+    return toColumn(data);
   }
 
   // ---------- cards ----------
-  async listCards(boardId: number) {
-    return db
+  async listCards(boardId: number): Promise<Card[]> {
+    const { data } = await supabase
+      .from("cards")
+      .select("*")
+      .eq("board_id", boardId)
+      .order("position");
+    return (data ?? []).map(toCard);
+  }
+
+  async getCard(id: number): Promise<Card | undefined> {
+    const { data } = await supabase
+      .from("cards")
+      .select("*")
+      .eq("id", id)
+      .maybeSingle();
+    return data ? toCard(data) : undefined;
+  }
+
+  async createCard(input: InsertCard): Promise<Card> {
+    const row = fromCard(input);
+    row.updated_at = new Date().toISOString();
+    const { data, error } = await supabase
+      .from("cards")
+      .insert(row)
       .select()
-      .from(cards)
-      .where(eq(cards.boardId, boardId))
-      .orderBy(asc(cards.position));
+      .single();
+    if (error) throw error;
+    return toCard(data);
   }
-  async getCard(id: number) {
-    const rows = await db.select().from(cards).where(eq(cards.id, id)).limit(1);
-    return rows[0];
+
+  async updateCard(id: number, patch: Partial<InsertCard>): Promise<Card | undefined> {
+    const row = fromCard(patch);
+    row.updated_at = new Date().toISOString();
+    const { data } = await supabase
+      .from("cards")
+      .update(row)
+      .eq("id", id)
+      .select()
+      .maybeSingle();
+    return data ? toCard(data) : undefined;
   }
-  async createCard(input: InsertCard) {
-    const rows = await db
-      .insert(cards)
-      .values({ ...input, updatedAt: new Date() })
-      .returning();
-    return rows[0];
+
+  async deleteCard(id: number): Promise<boolean> {
+    const { data } = await supabase
+      .from("cards")
+      .delete()
+      .eq("id", id)
+      .select();
+    return (data ?? []).length > 0;
   }
-  async updateCard(id: number, patch: Partial<InsertCard>) {
-    const rows = await db
-      .update(cards)
-      .set({ ...patch, updatedAt: new Date() })
-      .where(eq(cards.id, id))
-      .returning();
-    return rows[0];
-  }
-  async deleteCard(id: number) {
-    const rows = await db.delete(cards).where(eq(cards.id, id)).returning();
-    return rows.length > 0;
-  }
-  async moveCard(id: number, columnId: number, position: number) {
-    const rows = await db
-      .update(cards)
-      .set({ columnId, position, updatedAt: new Date() })
-      .where(eq(cards.id, id))
-      .returning();
-    return rows[0];
+
+  async moveCard(id: number, columnId: number, position: number): Promise<Card | undefined> {
+    const { data } = await supabase
+      .from("cards")
+      .update({ column_id: columnId, position, updated_at: new Date().toISOString() })
+      .eq("id", id)
+      .select()
+      .maybeSingle();
+    return data ? toCard(data) : undefined;
   }
 
   // ---------- comments ----------
-  async listComments(cardId: number) {
-    return db
-      .select()
-      .from(comments)
-      .where(eq(comments.cardId, cardId))
-      .orderBy(asc(comments.createdAt));
+  async listComments(cardId: number): Promise<Comment[]> {
+    const { data } = await supabase
+      .from("comments")
+      .select("*")
+      .eq("card_id", cardId)
+      .order("created_at");
+    return (data ?? []).map(toComment);
   }
-  async createComment(input: InsertComment) {
-    const rows = await db.insert(comments).values(input).returning();
-    return rows[0];
+
+  async createComment(input: InsertComment): Promise<Comment> {
+    const { data, error } = await supabase
+      .from("comments")
+      .insert(fromComment(input))
+      .select()
+      .single();
+    if (error) throw error;
+    return toComment(data);
   }
 
   // ---------- calls ----------
-  async createCall(input: InsertCall) {
-    const rows = await db.insert(calls).values(input).returning();
-    return rows[0];
-  }
-  async listCallsForUser(userId: number) {
-    return db
+  async createCall(input: InsertCall): Promise<Call> {
+    const { data, error } = await supabase
+      .from("calls")
+      .insert(fromCall(input))
       .select()
-      .from(calls)
-      .where(eq(calls.userId, userId))
-      .orderBy(desc(calls.scheduledFor));
+      .single();
+    if (error) throw error;
+    return toCall(data);
   }
-  async updateCall(id: number, patch: Partial<InsertCall>) {
-    const rows = await db.update(calls).set(patch).where(eq(calls.id, id)).returning();
-    return rows[0];
+
+  async listCallsForUser(userId: number): Promise<Call[]> {
+    const { data } = await supabase
+      .from("calls")
+      .select("*")
+      .eq("user_id", userId)
+      .order("scheduled_for", { ascending: false });
+    return (data ?? []).map(toCall);
+  }
+
+  async updateCall(id: number, patch: Partial<InsertCall>): Promise<Call | undefined> {
+    const { data } = await supabase
+      .from("calls")
+      .update(fromCall(patch))
+      .eq("id", id)
+      .select()
+      .maybeSingle();
+    return data ? toCall(data) : undefined;
   }
 }
 
 export const storage = new DatabaseStorage();
 export { stripPwd };
 
-// =========================================================
-// SEED — Brian + Stephanie + their boards + PowerWyze board
-// =========================================================
+// seedIfEmpty is no longer needed — data is seeded via MCP
 export async function seedIfEmpty() {
-  const existing = await db.select().from(users).limit(1);
-  if (existing.length > 0) return;
-
-  const brian = await storage.createUser({
-    email: "bryan.stewart@powerwyze.com",
-    name: "Bryan Stewart",
-    password: "powerwyze123",
-    phone: "+18577076043",
-    standupTime: "09:00",
-    eodTime: "17:00",
-    timezone: "America/New_York",
-  });
-  const steph = await storage.createUser({
-    email: "stephanie@powerwyze.com",
-    name: "Stephanie",
-    password: "powerwyze123",
-    phone: "+19176731479",
-    standupTime: "09:00",
-    eodTime: "17:00",
-    timezone: "America/New_York",
-  });
-
-  const defaultColumns = ["Backlog", "In Progress", "Blocked", "Done"];
-
-  const boardsToMake: InsertBoard[] = [
-    { name: "PowerWyze", slug: "powerwyze", description: "Company-wide board — shared by everyone.", kind: "company", ownerId: null as any, shared: true },
-    { name: "Sales Objectives", slug: "sales-objectives", description: "Sales pipeline and targets — owned by Stephanie.", kind: "business", ownerId: steph.id, shared: true },
-    { name: "Bryan — Technical & Logistics", slug: "bryan-tech-logistics", description: "Engineering, infra, and ops — owned by Bryan.", kind: "business", ownerId: brian.id, shared: true },
-    { name: "Stephanie — Personal", slug: "stephanie-personal", description: "Stephanie's private board.", kind: "personal", ownerId: steph.id, shared: false },
-    { name: "Bryan — Personal", slug: "bryan-personal", description: "Bryan's private board.", kind: "personal", ownerId: brian.id, shared: false },
-  ];
-
-  for (const b of boardsToMake) {
-    const board = await storage.createBoard(b);
-    for (let i = 0; i < defaultColumns.length; i++) {
-      await storage.createColumn({ boardId: board.id, name: defaultColumns[i], position: i });
-    }
-  }
-
-  // Sample cards so the demo has texture.
-  const pwBoard = await storage.getBoardBySlug("powerwyze");
-  if (pwBoard) {
-    const cols = await storage.listColumns(pwBoard.id);
-    await storage.createCard({
-      boardId: pwBoard.id,
-      columnId: cols[0].id,
-      title: "Launch voice agent demo for prospect call",
-      description: "Prep ElevenLabs demo with sample PowerWyze use case.",
-      assigneeId: brian.id,
-      priority: "high",
-      tags: JSON.stringify(["demo", "voice-agent"]),
-      dueDate: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
-      position: 0,
-      source: "manual",
-    });
-    await storage.createCard({
-      boardId: pwBoard.id,
-      columnId: cols[1].id,
-      title: "Finalize Q2 OKRs",
-      description: "Stephanie + Bryan to align on top 3.",
-      assigneeId: steph.id,
-      priority: "medium",
-      tags: JSON.stringify(["okr"]),
-      dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      position: 0,
-      source: "manual",
-    });
-  }
+  // no-op: seed data inserted via Supabase MCP
 }

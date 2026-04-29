@@ -1,123 +1,156 @@
-import { pgTable, text, integer, serial, boolean, timestamp } from "drizzle-orm/pg-core";
-import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
 // =====================================================================
-// USERS — Brian and Stephanie are seeded; the app is closed-beta only.
+// USERS
 // =====================================================================
-export const users = pgTable("users", {
-  id: serial("id").primaryKey(),
-  email: text("email").notNull().unique(),
-  name: text("name").notNull(),
-  password: text("password").notNull(), // bcrypt hash
-  phone: text("phone"), // E.164 format for Twilio
-  standupTime: text("standup_time").default("09:00"), // HH:MM 24h, user's local TZ
-  eodTime: text("eod_time").default("17:00"),
-  timezone: text("timezone").default("America/New_York"),
-  createdAt: timestamp("created_at").$defaultFn(() => new Date()),
-});
+export type User = {
+  id: number;
+  email: string;
+  name: string;
+  password: string; // bcrypt hash
+  phone: string | null;
+  standup_time: string | null; // HH:MM 24h
+  eod_time: string | null;
+  timezone: string | null;
+  created_at: string | null;
+};
 
-export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true });
-export type InsertUser = z.infer<typeof insertUserSchema>;
-export type User = typeof users.$inferSelect;
 export type SafeUser = Omit<User, "password">;
+
+export const insertUserSchema = z.object({
+  email: z.string().email(),
+  name: z.string().min(1),
+  password: z.string().min(1),
+  phone: z.string().optional().nullable(),
+  standupTime: z.string().optional().nullable(),
+  eodTime: z.string().optional().nullable(),
+  timezone: z.string().optional().nullable(),
+});
+export type InsertUser = z.infer<typeof insertUserSchema>;
 
 // =====================================================================
 // BOARDS
-//   - Personal boards: ownerId set, shared = false → only that user sees it
-//   - Business boards: ownerId set, shared = true  → all users see it
-//   - PowerWyze:       ownerId null, shared = true  → company-wide
 // =====================================================================
-export const boards = pgTable("boards", {
-  id: serial("id").primaryKey(),
-  name: text("name").notNull(),
-  slug: text("slug").notNull().unique(),
-  description: text("description"),
-  kind: text("kind").notNull(), // "personal" | "business" | "company"
-  ownerId: integer("owner_id").references(() => users.id), // null for company board
-  shared: boolean("shared").notNull().default(false),
-  createdAt: timestamp("created_at").$defaultFn(() => new Date()),
-});
+export type Board = {
+  id: number;
+  name: string;
+  slug: string;
+  description: string | null;
+  kind: string;
+  owner_id: number | null;
+  shared: boolean;
+  created_at: string | null;
+};
 
-export const insertBoardSchema = createInsertSchema(boards).omit({ id: true, createdAt: true });
+export const insertBoardSchema = z.object({
+  name: z.string().min(1),
+  slug: z.string().min(1),
+  description: z.string().optional().nullable(),
+  kind: z.string().min(1),
+  ownerId: z.number().optional().nullable(),
+  shared: z.boolean().default(false),
+});
 export type InsertBoard = z.infer<typeof insertBoardSchema>;
-export type Board = typeof boards.$inferSelect;
 
 // =====================================================================
-// COLUMNS — Backlog / In Progress / Blocked / Done by default
+// COLUMNS
 // =====================================================================
-export const columns = pgTable("columns", {
-  id: serial("id").primaryKey(),
-  boardId: integer("board_id").notNull().references(() => boards.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),
-  position: integer("position").notNull(),
+export type Column = {
+  id: number;
+  board_id: number;
+  name: string;
+  position: number;
+};
+
+export const insertColumnSchema = z.object({
+  boardId: z.number(),
+  name: z.string().min(1),
+  position: z.number(),
 });
-
-export const insertColumnSchema = createInsertSchema(columns).omit({ id: true });
 export type InsertColumn = z.infer<typeof insertColumnSchema>;
-export type Column = typeof columns.$inferSelect;
 
 // =====================================================================
 // CARDS
 // =====================================================================
-export const cards = pgTable("cards", {
-  id: serial("id").primaryKey(),
-  boardId: integer("board_id").notNull().references(() => boards.id, { onDelete: "cascade" }),
-  columnId: integer("column_id").notNull().references(() => columns.id, { onDelete: "cascade" }),
-  title: text("title").notNull(),
-  description: text("description"),
-  assigneeId: integer("assignee_id").references(() => users.id),
-  priority: text("priority").default("medium"), // "low" | "medium" | "high"
-  tags: text("tags").default("[]"), // JSON array of strings
-  dueDate: timestamp("due_date"),
-  position: integer("position").notNull().default(0),
-  source: text("source").default("manual"), // manual | standup | eod | chat
-  createdAt: timestamp("created_at").$defaultFn(() => new Date()),
-  updatedAt: timestamp("updated_at").$defaultFn(() => new Date()),
-});
+export type Card = {
+  id: number;
+  board_id: number;
+  column_id: number;
+  title: string;
+  description: string | null;
+  assignee_id: number | null;
+  priority: string | null;
+  tags: string | null; // JSON string in DB
+  due_date: string | null;
+  position: number;
+  source: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
 
-export const insertCardSchema = createInsertSchema(cards).omit({
-  id: true,
-  createdAt: true,
-  updatedAt: true,
+export const insertCardSchema = z.object({
+  boardId: z.number(),
+  columnId: z.number(),
+  title: z.string().min(1),
+  description: z.string().optional().nullable(),
+  assigneeId: z.number().optional().nullable(),
+  priority: z.string().optional().nullable(),
+  tags: z.union([z.string(), z.array(z.string())]).optional().nullable(),
+  dueDate: z.union([z.string(), z.date()]).optional().nullable(),
+  position: z.number().default(0),
+  source: z.string().optional().nullable(),
 });
 export type InsertCard = z.infer<typeof insertCardSchema>;
-export type Card = typeof cards.$inferSelect;
 
 // =====================================================================
 // COMMENTS
 // =====================================================================
-export const comments = pgTable("comments", {
-  id: serial("id").primaryKey(),
-  cardId: integer("card_id").notNull().references(() => cards.id, { onDelete: "cascade" }),
-  authorId: integer("author_id").notNull().references(() => users.id),
-  body: text("body").notNull(),
-  createdAt: timestamp("created_at").$defaultFn(() => new Date()),
-});
+export type Comment = {
+  id: number;
+  card_id: number;
+  author_id: number;
+  body: string;
+  created_at: string | null;
+};
 
-export const insertCommentSchema = createInsertSchema(comments).omit({ id: true, createdAt: true });
+export const insertCommentSchema = z.object({
+  cardId: z.number(),
+  authorId: z.number(),
+  body: z.string().min(1),
+});
 export type InsertComment = z.infer<typeof insertCommentSchema>;
-export type Comment = typeof comments.$inferSelect;
 
 // =====================================================================
-// CALLS — every standup / EOD call we place via Twilio + ElevenLabs
+// CALLS
 // =====================================================================
-export const calls = pgTable("calls", {
-  id: serial("id").primaryKey(),
-  userId: integer("user_id").notNull().references(() => users.id),
-  kind: text("kind").notNull(), // "standup" | "eod"
-  status: text("status").notNull().default("scheduled"), // "scheduled"|"dialing"|"in_progress"|"completed"|"failed"
-  scheduledFor: timestamp("scheduled_for").notNull(),
-  startedAt: timestamp("started_at"),
-  endedAt: timestamp("ended_at"),
-  twilioCallSid: text("twilio_call_sid"),
-  elevenlabsConversationId: text("elevenlabs_conversation_id"),
-  transcript: text("transcript"), // full transcript JSON
-  summary: text("summary"),
-  mood: text("mood"), // user's "how are you" answer
-  actionItemsCreated: integer("action_items_created").default(0),
+export type Call = {
+  id: number;
+  user_id: number;
+  kind: string;
+  status: string;
+  scheduled_for: string;
+  started_at: string | null;
+  ended_at: string | null;
+  twilio_call_sid: string | null;
+  elevenlabs_conversation_id: string | null;
+  transcript: string | null;
+  summary: string | null;
+  mood: string | null;
+  action_items_created: number | null;
+};
+
+export const insertCallSchema = z.object({
+  userId: z.number(),
+  kind: z.string(),
+  status: z.string().default("scheduled"),
+  scheduledFor: z.union([z.string(), z.date()]),
+  startedAt: z.union([z.string(), z.date()]).optional().nullable(),
+  endedAt: z.union([z.string(), z.date()]).optional().nullable(),
+  twilioCallSid: z.string().optional().nullable(),
+  elevenlabsConversationId: z.string().optional().nullable(),
+  transcript: z.string().optional().nullable(),
+  summary: z.string().optional().nullable(),
+  mood: z.string().optional().nullable(),
+  actionItemsCreated: z.number().optional().nullable(),
 });
-
-export const insertCallSchema = createInsertSchema(calls).omit({ id: true });
 export type InsertCall = z.infer<typeof insertCallSchema>;
-export type Call = typeof calls.$inferSelect;
