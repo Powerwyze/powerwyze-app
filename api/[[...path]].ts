@@ -26,6 +26,11 @@ async function init() {
 }
 
 export default async function handler(req: any, res: any) {
-  await init();
-  return app(req, res);
+  try {
+    await init();
+    return app(req, res);
+  } catch (err: any) {
+    console.error("[handler] Fatal error:", err);
+    res.status(500).json({ message: err?.message || "Server initialization failed", stack: err?.stack?.split("\n").slice(0, 5) });
+  }
 }
