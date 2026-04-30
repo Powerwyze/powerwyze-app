@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useRoute } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -38,7 +38,16 @@ export default function Board() {
   const boardQ = useQuery<{ board: Board; columns: Column[]; cards: Card[] }>({
     queryKey: ["/api/boards", slug],
     enabled: !!slug,
+    retry: false,
   });
+
+  // If the board API returns 401 (session expired), force a refresh of /api/auth/me
+  // so the app routes back to the Login page instead of showing "Board not found".
+  useEffect(() => {
+    if (boardQ.isError && /^401:/.test((boardQ.error as Error)?.message || "")) {
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+    }
+  }, [boardQ.isError, boardQ.error]);
   const usersQ = useQuery<{ users: SafeUser[] }>({ queryKey: ["/api/users"] });
 
   const moveMut = useMutation({
@@ -79,7 +88,17 @@ export default function Board() {
 
   if (!slug) return <AppShell><div className="p-8">Loading…</div></AppShell>;
   if (boardQ.isLoading) return <AppShell><div className="p-8 text-muted-foreground">Loading board…</div></AppShell>;
-  if (!boardQ.data) return <AppShell><div className="p-8">Board not found</div></AppShell>;
+  if (boardQ.isError) {
+    const msg = (boardQ.error as Error)?.message || "";
+    if (/^401:/.test(msg)) {
+      return <AppShell><div className="p-8 text-muted-foreground">Your session expired. Refreshing…</div></AppShell>;
+    }
+    if (/^403:/.test(msg)) {
+      return <AppShell><div className="p-8"><h2 className="text-lg font-semibold mb-1">No access to this board</h2><p className="text-sm text-muted-foreground">This is a private board. Pick one from the sidebar.</p></div></AppShell>;
+    }
+    return <AppShell><div className="p-8"><h2 className="text-lg font-semibold mb-1">Couldn't load this board</h2><p className="text-sm text-muted-foreground">{msg || "Unknown error"}</p></div></AppShell>;
+  }
+  if (!boardQ.data) return <AppShell><div className="p-8"><h2 className="text-lg font-semibold mb-1">Board not found</h2><p className="text-sm text-muted-foreground">The board "{slug}" doesn't exist or has been removed.</p></div></AppShell>;
 
   const { board, columns } = boardQ.data;
   const KindIcon = board.kind === "company" ? Building2 : board.kind === "personal" ? Lock : Briefcase;
