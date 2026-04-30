@@ -1,0 +1,26 @@
+name: Place scheduled calls
+
+on:
+  schedule:
+    # Runs every 5 minutes — GitHub Actions minimum granularity.
+    # If a user's standup_time or eod_time falls on a non-multiple-of-5 minute,
+    # they'll be dialed at the next 5-minute slot.
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit cron endpoint
+        run: |
+          response=$(curl -s -w "\n%{http_code}" \
+            -X POST "https://powerwyze-app.vercel.app/api/cron/place-calls" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}")
+          body=$(echo "$response" | head -n -1)
+          status=$(echo "$response" | tail -n 1)
+          echo "HTTP $status"
+          echo "$body"
+          if [ "$status" != "200" ]; then
+            exit 1
+          fi
