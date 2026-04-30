@@ -370,6 +370,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ received: true, conversationId, turns: transcript.length });
   });
 
+  // ---------------- EMAIL SYNC ----------------
+  app.get("/api/sync/email/last", requireAuth, async (_req, res) => {
+    try {
+      const last = await storage.getLastSync();
+      const recentCount = await storage.countRecentEmailCards(24);
+      res.json({ last, recentEmailCards: recentCount });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to fetch sync info" });
+    }
+  });
+
+  app.post("/api/sync/email", requireAuth, async (_req, res) => {
+    try {
+      const cardsAdded = await storage.countRecentEmailCards(24);
+      const row = await storage.insertSyncLog({
+        status: "success",
+        windowHours: 24,
+        cardsAdded,
+        notes: "Manual sync triggered from dashboard",
+      });
+      res.json({ sync: row, cardsAdded });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Sync failed" });
+    }
+  });
+
   return httpServer;
 }
 

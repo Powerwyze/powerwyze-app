@@ -1,10 +1,13 @@
 import { type ReactNode } from "react";
 import { Link, useLocation } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth";
 import { Logo } from "./Logo";
 import { Button } from "@/components/ui/button";
-import { LogOut, User as UserIcon, Phone, Building2, Lock, Briefcase } from "lucide-react";
+import { LogOut, User as UserIcon, Phone, Building2, Lock, Briefcase, RefreshCw } from "lucide-react";
+import { apiRequest } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+import { formatDistanceToNow } from "date-fns";
 
 type Board = {
   id: number;
@@ -18,6 +21,31 @@ export function AppShell({ children }: { children: ReactNode }) {
   const { me, logout } = useAuth();
   const [location] = useLocation();
   const { data } = useQuery<{ boards: Board[] }>({ queryKey: ["/api/boards"] });
+  const { toast } = useToast();
+  const qc = useQueryClient();
+
+  const { data: syncData } = useQuery<{ last: any; recentEmailCards: number }>({
+    queryKey: ["/api/sync/email/last"],
+  });
+
+  const syncMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/sync/email");
+      return res.json();
+    },
+    onSuccess: (data: any) => {
+      qc.invalidateQueries({ queryKey: ["/api/sync/email/last"] });
+      const count = data?.cardsAdded ?? 0;
+      toast({
+        title: count > 0
+          ? `Synced — ${count} new card${count === 1 ? "" : "s"} in last 24h`
+          : "Sync complete — no new cards",
+      });
+    },
+    onError: () => {
+      toast({ title: "Sync failed", variant: "destructive" });
+    },
+  });
 
   const boards = data?.boards || [];
   const personal = boards.filter((b) => b.kind === "personal");
@@ -80,20 +108,39 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </nav>
 
-        <div className="border-t border-sidebar-border p-3">
-          <div className="mb-2 text-xs">
-            <div className="font-medium" data-testid="text-username">{me?.name}</div>
-            <div className="text-muted-foreground truncate">{me?.email}</div>
-          </div>
+        <div className="border-t border-sidebar-border p-3 space-y-2">
           <Button
             variant="outline"
             size="sm"
             className="w-full"
-            onClick={() => logout()}
-            data-testid="button-logout"
+            onClick={() => syncMutation.mutate()}
+            disabled={syncMutation.isPending}
+            data-testid="button-sync-emails"
           >
-            <LogOut className="h-4 w-4 mr-2" /> Sign out
+            <RefreshCw className={`h-4 w-4 mr-2 ${syncMutation.isPending ? "animate-spin" : ""}`} />
+            Sync emails
           </Button>
+          {syncData?.last?.finishedAt && (
+            <div className="text-xs text-muted-foreground text-center">
+              Last sync:{" "}
+              {formatDistanceToNow(new Date(syncData.last.finishedAt), { addSuffix: true })}
+            </div>
+          )}
+          <div className="pt-1">
+            <div className="mb-2 text-xs">
+              <div className="font-medium" data-testid="text-username">{me?.name}</div>
+              <div className="text-muted-foreground truncate">{me?.email}</div>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={() => logout()}
+              data-testid="button-logout"
+            >
+              <LogOut className="h-4 w-4 mr-2" /> Sign out
+            </Button>
+          </div>
         </div>
       </aside>
 

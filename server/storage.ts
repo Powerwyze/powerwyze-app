@@ -479,6 +479,65 @@ export class DatabaseStorage implements IStorage {
     return toComment(data);
   }
 
+  // ---------- sync_log ----------
+  async getLastSync(): Promise<any | null> {
+    const { data } = await supabase
+      .from("sync_log")
+      .select("*")
+      .order("id", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!data) return null;
+    return {
+      id: data.id,
+      startedAt: data.started_at,
+      finishedAt: data.finished_at ?? null,
+      status: data.status,
+      cardsAdded: data.cards_added,
+      windowHours: data.window_hours,
+      notes: data.notes ?? null,
+    };
+  }
+
+  async countRecentEmailCards(hours: number): Promise<number> {
+    const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+    const { count } = await supabase
+      .from("cards")
+      .select("id", { count: "exact", head: true })
+      .eq("source", "email")
+      .gte("created_at", since);
+    return count ?? 0;
+  }
+
+  async insertSyncLog(row: {
+    status: string;
+    windowHours: number;
+    cardsAdded: number;
+    notes?: string;
+  }): Promise<any> {
+    const { data, error } = await supabase
+      .from("sync_log")
+      .insert({
+        status: row.status,
+        window_hours: row.windowHours,
+        cards_added: row.cardsAdded,
+        notes: row.notes ?? null,
+        finished_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    return {
+      id: data.id,
+      startedAt: data.started_at,
+      finishedAt: data.finished_at ?? null,
+      status: data.status,
+      cardsAdded: data.cards_added,
+      windowHours: data.window_hours,
+      notes: data.notes ?? null,
+    };
+  }
+
   // ---------- calls ----------
   async createCall(input: InsertCall): Promise<Call> {
     const { data, error } = await supabase
