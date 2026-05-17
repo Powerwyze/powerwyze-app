@@ -332,10 +332,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         <Response><Say>PowerWyze voice agent is not yet configured. Goodbye.</Say><Hangup/></Response>`,
       );
     }
+    const conversationUrl = await getElevenLabsConversationUrl(elevenAgentId);
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
       <Response>
         <Connect>
-          <ConversationRelay url="wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${elevenAgentId}" />
+          <ConversationRelay url="${escapeXmlAttribute(conversationUrl)}" />
         </Connect>
       </Response>`;
     res.type("text/xml").send(xml);
@@ -423,6 +424,32 @@ async function callLLM(messages: { role: string; content: string }[], opts: { js
   } catch {
     return null;
   }
+}
+
+async function getElevenLabsConversationUrl(agentId: string) {
+  const fallbackUrl = `wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${agentId}`;
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (!apiKey) return fallbackUrl;
+  try {
+    const url = new URL("https://api.elevenlabs.io/v1/convai/conversation/get-signed-url");
+    url.searchParams.set("agent_id", agentId);
+    const resp = await fetch(url, {
+      headers: { "xi-api-key": apiKey },
+    });
+    if (!resp.ok) return fallbackUrl;
+    const data = await resp.json();
+    return data.signed_url || fallbackUrl;
+  } catch {
+    return fallbackUrl;
+  }
+}
+
+function escapeXmlAttribute(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 async function runChatAgent({ board, cols, cards, users, message, userId }: any) {
