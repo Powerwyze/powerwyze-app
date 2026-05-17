@@ -1,5 +1,6 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import type { Server } from "node:http";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import session from "express-session";
 import createMemoryStore from "memorystore";
 import { storage, stripPwd, seedIfEmpty, bootstrap } from "./storage.js";
@@ -18,7 +19,9 @@ declare module "express-session" {
 }
 
 const requireAuth = (req: Request, res: Response, next: NextFunction) => {
-  if (!req.session.userId) return res.status(401).json({ message: "Not authenticated" });
+  const userId = getAuthenticatedUserId(req);
+  if (!userId) return res.status(401).json({ message: "Not authenticated" });
+  req.session.userId = userId;
   next();
 };
 
@@ -54,16 +57,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const user = await storage.verifyPassword(email, password);
     if (!user) return res.status(401).json({ message: "Invalid email or password" });
     req.session.userId = user.id;
+    setAuthCookie(res, user.id);
     res.json({ user: stripPwd(user) });
   });
 
   app.post("/api/auth/logout", (req, res) => {
+    clearAuthCookie(res);
     req.session.destroy(() => res.json({ ok: true }));
   });
 
   app.get("/api/auth/me", async (req, res) => {
-    if (!req.session.userId) return res.status(401).json({ message: "Not authenticated" });
-    const user = await storage.getUser(req.session.userId);
+    const userId = getAuthenticatedUserId(req);
+    if (!userId) return res.status(401).json({ message: "Not authenticated" });
+    req.session.userId = userId;
+    const user = await storage.getUser(userId);
     if (!user) return res.status(401).json({ message: "User missing" });
     res.json({ user: stripPwd(user) });
   });
@@ -288,7 +295,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const out = await placeOutboundCall({ userId: me.id, toPhone: me.phone, kind, baseUrl });
       res.json({ ok: true, ...out });
     } catch (e: any) {
-      res.status(500).json({ message: e.message });
+      console.error("Failed to place outbound call", {
+        message: e.message,
+        code: e.code,
+        status: e.status,
+        moreInfo: e.moreInfo,
+      });
+      res.status(500).json({
+        message: e.message || "Failed to place outbound call",
+        code: e.code,
+        status: e.status,
+        moreInfo: e.moreInfo,
+      });
     }
   });
 
@@ -398,6 +416,75 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   return httpServer;
+}
+
+const AUTH_COOKIE = "pw_auth";
+const AUTH_COOKIE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
+
+function getSessionSecret() {
+  return process.env.SESSION_SECRET || "powerwyze-dev-secret-change-me";
+}
+
+function getAuthenticatedUserId(req: Request) {
+  if (req.session.userId) return req.session.userId;
+  const token = parseCookies(req.headers.cookie || "")[AUTH_COOKIE];
+  return verifyAuthToken(token);
+}
+
+function setAuthCookie(res: Response, userId: number) {
+  const expiresAt = Date.now() + AUTH_COOKIE_MAX_AGE_SECONDS * 1000;
+  const token = signAuthToken(userId, expiresAt);
+  res.cookie(AUTH_COOKIE, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: AUTH_COOKIE_MAX_AGE_SECONDS * 1000,
+    path: "/",
+  });
+}
+
+function clearAuthCookie(res: Response) {
+  res.clearCookie(AUTH_COOKIE, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+  });
+}
+
+function signAuthToken(userId: number, expiresAt: number) {
+  const payload = `${userId}.${expiresAt}`;
+  const signature = createHmac("sha256", getSessionSecret()).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+function verifyAuthToken(token?: string) {
+  if (!token) return null;
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  const [rawUserId, rawExpiresAt, signature] = parts;
+  const userId = Number(rawUserId);
+  const expiresAt = Number(rawExpiresAt);
+  if (!Number.isInteger(userId) || !Number.isFinite(expiresAt) || expiresAt < Date.now()) {
+    return null;
+  }
+
+  const payload = `${rawUserId}.${rawExpiresAt}`;
+  const expected = createHmac("sha256", getSessionSecret()).update(payload).digest("base64url");
+  const actualBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (actualBuffer.length !== expectedBuffer.length) return null;
+  return timingSafeEqual(actualBuffer, expectedBuffer) ? userId : null;
+}
+
+function parseCookies(header: string) {
+  const cookies: Record<string, string> = {};
+  for (const part of header.split(";")) {
+    const [name, ...valueParts] = part.trim().split("=");
+    if (!name || valueParts.length === 0) continue;
+    cookies[name] = decodeURIComponent(valueParts.join("="));
+  }
+  return cookies;
 }
 
 // =====================================================================================
