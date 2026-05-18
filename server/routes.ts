@@ -350,14 +350,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         <Response><Say>PowerWyze voice agent is not yet configured. Goodbye.</Say><Hangup/></Response>`,
       );
     }
-    const conversationUrl = await getElevenLabsConversationUrl(elevenAgentId);
-    const xml = `<?xml version="1.0" encoding="UTF-8"?>
-      <Response>
-        <Connect>
-          <ConversationRelay url="${escapeXmlAttribute(conversationUrl)}" />
-        </Connect>
-      </Response>`;
-    res.type("text/xml").send(xml);
+
+    try {
+      const twiml = await registerElevenLabsTwilioCall({
+        agentId: elevenAgentId,
+        fromNumber: (req.body?.From || req.query.From || process.env.TWILIO_FROM_NUMBER || "").toString(),
+        toNumber: (req.body?.To || req.query.To || process.env.TWILIO_FROM_NUMBER || "").toString(),
+        direction: ((req.query.direction as string) || "outbound") as "inbound" | "outbound",
+        callSid: (req.body?.CallSid || req.query.CallSid || "").toString(),
+        callId,
+        kind: (req.query.kind || "").toString(),
+        userId: (req.query.userId || "").toString(),
+      });
+
+      return res.type("text/xml").send(twiml);
+    } catch (error) {
+      console.error("ElevenLabs Twilio register-call failed", error);
+      return res.type("text/xml").send(
+        `<?xml version="1.0" encoding="UTF-8"?>
+        <Response><Say>PowerWyze voice agent could not connect. Goodbye.</Say><Hangup/></Response>`,
+      );
+    }
   });
 
   app.all("/api/webhooks/twilio/status", async (req, res) => {
@@ -513,30 +526,61 @@ async function callLLM(messages: { role: string; content: string }[], opts: { js
   }
 }
 
-async function getElevenLabsConversationUrl(agentId: string) {
-  const fallbackUrl = `wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${agentId}`;
+async function registerElevenLabsTwilioCall({
+  agentId,
+  fromNumber,
+  toNumber,
+  direction,
+  callSid,
+  callId,
+  kind,
+  userId,
+}: {
+  agentId: string;
+  fromNumber: string;
+  toNumber: string;
+  direction: "inbound" | "outbound";
+  callSid?: string;
+  callId?: number;
+  kind?: string;
+  userId?: string;
+}) {
   const apiKey = process.env.ELEVENLABS_API_KEY;
-  if (!apiKey) return fallbackUrl;
-  try {
-    const url = new URL("https://api.elevenlabs.io/v1/convai/conversation/get-signed-url");
-    url.searchParams.set("agent_id", agentId);
-    const resp = await fetch(url, {
-      headers: { "xi-api-key": apiKey },
-    });
-    if (!resp.ok) return fallbackUrl;
-    const data = await resp.json();
-    return data.signed_url || fallbackUrl;
-  } catch {
-    return fallbackUrl;
+  if (!apiKey) {
+    throw new Error("ELEVENLABS_API_KEY is not configured");
   }
-}
+  if (!fromNumber || !toNumber) {
+    throw new Error("Twilio webhook did not include From and To numbers");
+  }
 
-function escapeXmlAttribute(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  const resp = await fetch("https://api.elevenlabs.io/v1/convai/twilio/register-call", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "xi-api-key": apiKey,
+    },
+    body: JSON.stringify({
+      agent_id: agentId,
+      from_number: fromNumber,
+      to_number: toNumber,
+      direction,
+      conversation_initiation_client_data: {
+        dynamic_variables: {
+          call_sid: callSid || "",
+          powerwyze_call_id: callId ? String(callId) : "",
+          powerwyze_call_kind: kind || "",
+          powerwyze_user_id: userId || "",
+        },
+      },
+    }),
+  });
+
+  const body = await resp.text();
+  if (!resp.ok) {
+    throw new Error(`ElevenLabs register-call returned ${resp.status}: ${body}`);
+  }
+
+  return body;
 }
 
 async function runChatAgent({ board, cols, cards, users, message, userId }: any) {
