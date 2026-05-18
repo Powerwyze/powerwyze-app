@@ -11,12 +11,19 @@ on:
 jobs:
   ping:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - name: Hit cron endpoint
         run: |
+          token_response=$(curl -sSf \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=powerwyze-scheduled-calls")
+          oidc_token=$(echo "$token_response" | jq -r '.value')
           response=$(curl -s -w "\n%{http_code}" \
             -X POST "https://powerwyze-app.vercel.app/api/cron/place-calls" \
-            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}")
+            -H "Authorization: Bearer $oidc_token")
           body=$(echo "$response" | head -n -1)
           status=$(echo "$response" | tail -n 1)
           echo "HTTP $status"

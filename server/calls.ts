@@ -13,24 +13,30 @@ export async function placeOutboundCall(opts: {
   toPhone: string;
   kind: "standup" | "eod";
   baseUrl: string;
+  scheduledFor?: Date;
 }) {
   if (!client) throw new Error("Twilio not configured");
   const call = await storage.createCall({
     userId: opts.userId,
     kind: opts.kind,
     status: "dialing",
-    scheduledFor: new Date(),
+    scheduledFor: opts.scheduledFor ?? new Date(),
     startedAt: new Date(),
   });
-  const result = await client.calls.create({
-    to: opts.toPhone,
-    from: fromNumber!,
-    url: `${opts.baseUrl}/api/webhooks/twilio/voice?callId=${call.id}&kind=${opts.kind}&userId=${opts.userId}`,
-    statusCallback: `${opts.baseUrl}/api/webhooks/twilio/status?callId=${call.id}`,
-    statusCallbackEvent: ["initiated", "ringing", "answered", "completed"],
-  });
-  await storage.updateCall(call.id, { twilioCallSid: result.sid });
-  return { callId: call.id, twilioSid: result.sid };
+  try {
+    const result = await client.calls.create({
+      to: opts.toPhone,
+      from: fromNumber!,
+      url: `${opts.baseUrl}/api/webhooks/twilio/voice?callId=${call.id}&kind=${opts.kind}&userId=${opts.userId}`,
+      statusCallback: `${opts.baseUrl}/api/webhooks/twilio/status?callId=${call.id}`,
+      statusCallbackEvent: ["initiated", "ringing", "answered", "completed", "failed", "busy", "no-answer"],
+    });
+    await storage.updateCall(call.id, { twilioCallSid: result.sid });
+    return { callId: call.id, twilioSid: result.sid };
+  } catch (error) {
+    await storage.updateCall(call.id, { status: "failed", endedAt: new Date() });
+    throw error;
+  }
 }
 
 // Returns "HH:MM" in the given IANA timezone right now.

@@ -1,6 +1,6 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import type { Server } from "node:http";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, createPublicKey, timingSafeEqual, verify } from "node:crypto";
 import session from "express-session";
 import createMemoryStore from "memorystore";
 import { storage, stripPwd, seedIfEmpty, bootstrap } from "./storage.js";
@@ -311,32 +311,54 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // ---------------- CRON ----------------
-  // Vercel Cron (or any minute scheduler) hits this endpoint once per minute.
+  // GitHub Actions hits this endpoint every 5 minutes and authenticates with OIDC.
   // It checks every user's standupTime / eodTime against their local time and dials matches.
   app.all("/api/cron/place-calls", async (req, res) => {
-    const cronSecret = req.headers["x-cron-secret"] || req.query.secret;
-    if (cronSecret !== (process.env.CRON_SECRET || process.env.ELEVENLABS_SHARED_SECRET)) {
+    if (!(await isAuthorizedCronRequest(req))) {
       return res.status(401).json({ message: "Unauthorized" });
     }
     if (!twilioReady) return res.status(503).json({ message: "Twilio not configured" });
     const baseUrl = process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
     const allUsers = await storage.listUsers();
     const dialed: any[] = [];
+    const skipped: any[] = [];
+    const windowMinutes = parseInt(process.env.CALL_SCHEDULE_WINDOW_MINUTES || "10", 10);
     for (const u of allUsers) {
       if (!u.phone) continue;
-      const localHHMM = nowHHMMInTimezone(u.timezone || "America/New_York");
+      const timezone = u.timezone || "America/New_York";
+      const now = new Date();
+      const localHHMM = nowHHMMInTimezone(timezone);
       let kind: "standup" | "eod" | null = null;
-      if (localHHMM === u.standup_time) kind = "standup";
-      else if (localHHMM === u.eod_time) kind = "eod";
-      if (!kind) continue;
+      let scheduledHHMM: string | null = null;
+      if (isScheduleDue(u.standup_time, localHHMM, windowMinutes)) {
+        kind = "standup";
+        scheduledHHMM = u.standup_time;
+      } else if (isScheduleDue(u.eod_time, localHHMM, windowMinutes)) {
+        kind = "eod";
+        scheduledHHMM = u.eod_time;
+      }
+      if (!kind || !scheduledHHMM) continue;
+
+      const scheduledFor = scheduledDateForLocalTime(scheduledHHMM, timezone, now);
+      const callsToday = await storage.listCallsForUser(u.id);
+      const alreadyDialed = callsToday.some((call) => (
+        call.kind === kind
+        && call.status !== "failed"
+        && localDateKey(new Date(call.scheduled_for), timezone) === localDateKey(scheduledFor, timezone)
+      ));
+      if (alreadyDialed) {
+        skipped.push({ user: u.email, kind, reason: "already dialed today" });
+        continue;
+      }
+
       try {
-        const out = await placeOutboundCall({ userId: u.id, toPhone: u.phone, kind, baseUrl });
+        const out = await placeOutboundCall({ userId: u.id, toPhone: u.phone, kind, baseUrl, scheduledFor });
         dialed.push({ user: u.email, kind, ...out });
       } catch (e: any) {
         dialed.push({ user: u.email, kind, error: e.message });
       }
     }
-    res.json({ ok: true, dialed });
+    res.json({ ok: true, dialed, skipped, localWindowMinutes: windowMinutes });
   });
 
   // ---------------- TWILIO WEBHOOK — bridges call to ElevenLabs ----------------
@@ -352,6 +374,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     try {
+      const dynamicVariables = await buildCallDynamicVariables({
+        callId,
+        kind: (req.query.kind || "").toString(),
+        userId: (req.query.userId || "").toString(),
+        callSid: (req.body?.CallSid || req.query.CallSid || "").toString(),
+      });
+
       const twiml = await registerElevenLabsTwilioCall({
         agentId: elevenAgentId,
         fromNumber: (req.body?.From || req.query.From || process.env.TWILIO_FROM_NUMBER || "").toString(),
@@ -361,6 +390,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         callId,
         kind: (req.query.kind || "").toString(),
         userId: (req.query.userId || "").toString(),
+        dynamicVariables,
       });
 
       return res.type("text/xml").send(twiml);
@@ -378,6 +408,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const status = (req.body?.CallStatus || req.query.CallStatus || "").toString();
     if (callId && status === "completed") {
       await storage.updateCall(callId, { status: "completed", endedAt: new Date() });
+    } else if (callId && ["failed", "busy", "no-answer", "canceled"].includes(status)) {
+      await storage.updateCall(callId, { status: "failed", endedAt: new Date() });
     }
     res.sendStatus(200);
   });
@@ -535,6 +567,7 @@ async function registerElevenLabsTwilioCall({
   callId,
   kind,
   userId,
+  dynamicVariables,
 }: {
   agentId: string;
   fromNumber: string;
@@ -544,6 +577,7 @@ async function registerElevenLabsTwilioCall({
   callId?: number;
   kind?: string;
   userId?: string;
+  dynamicVariables?: Record<string, string>;
 }) {
   const apiKey = process.env.ELEVENLABS_API_KEY;
   if (!apiKey) {
@@ -570,6 +604,7 @@ async function registerElevenLabsTwilioCall({
           powerwyze_call_id: callId ? String(callId) : "",
           powerwyze_call_kind: kind || "",
           powerwyze_user_id: userId || "",
+          ...(dynamicVariables || {}),
         },
       },
     }),
@@ -581,6 +616,147 @@ async function registerElevenLabsTwilioCall({
   }
 
   return body;
+}
+
+function timeToMinutes(value: string | null | undefined) {
+  if (!value || !/^\d{2}:\d{2}$/.test(value)) return null;
+  const [hours, minutes] = value.split(":").map(Number);
+  return hours * 60 + minutes;
+}
+
+function isScheduleDue(scheduledHHMM: string | null | undefined, localHHMM: string, windowMinutes: number) {
+  const scheduled = timeToMinutes(scheduledHHMM);
+  const current = timeToMinutes(localHHMM);
+  if (scheduled === null || current === null) return false;
+  const dayMinutes = 24 * 60;
+  const elapsed = (current - scheduled + dayMinutes) % dayMinutes;
+  return elapsed >= 0 && elapsed < Math.max(1, windowMinutes);
+}
+
+function localDateKey(date: Date, timezone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const year = parts.find((part) => part.type === "year")?.value || "0000";
+  const month = parts.find((part) => part.type === "month")?.value || "00";
+  const day = parts.find((part) => part.type === "day")?.value || "00";
+  return `${year}-${month}-${day}`;
+}
+
+function scheduledDateForLocalTime(scheduledHHMM: string, timezone: string, now: Date) {
+  const localNow = nowHHMMInTimezone(timezone);
+  const scheduledMinutes = timeToMinutes(scheduledHHMM) ?? timeToMinutes(localNow) ?? 0;
+  const currentMinutes = timeToMinutes(localNow) ?? scheduledMinutes;
+  const elapsedMinutes = (currentMinutes - scheduledMinutes + 24 * 60) % (24 * 60);
+  return new Date(now.getTime() - elapsedMinutes * 60 * 1000);
+}
+
+async function isAuthorizedCronRequest(req: Request) {
+  const expectedSecret = process.env.CRON_SECRET || process.env.ELEVENLABS_SHARED_SECRET;
+  const legacySecret = req.headers["x-cron-secret"] || req.query.secret;
+  if (expectedSecret && legacySecret === expectedSecret) return true;
+
+  const authorization = (req.headers.authorization || "").toString();
+  if (!authorization.startsWith("Bearer ")) return false;
+
+  const token = authorization.slice("Bearer ".length);
+  if (expectedSecret && token === expectedSecret) return true;
+  return verifyGitHubOidcToken(token);
+}
+
+async function verifyGitHubOidcToken(token: string) {
+  try {
+    const [encodedHeader, encodedPayload, encodedSignature] = token.split(".");
+    if (!encodedHeader || !encodedPayload || !encodedSignature) return false;
+
+    const header = JSON.parse(base64UrlDecode(encodedHeader).toString("utf8"));
+    const payload = JSON.parse(base64UrlDecode(encodedPayload).toString("utf8"));
+    if (header.alg !== "RS256" || !header.kid) return false;
+    if (payload.iss !== "https://token.actions.githubusercontent.com") return false;
+    if (payload.aud !== "powerwyze-scheduled-calls") return false;
+    if (payload.repository !== "Powerwyze/powerwyze-app") return false;
+    if (payload.ref !== "refs/heads/master") return false;
+    if (Math.floor(Date.now() / 1000) >= Number(payload.exp || 0)) return false;
+
+    const jwksResp = await fetch("https://token.actions.githubusercontent.com/.well-known/jwks");
+    if (!jwksResp.ok) return false;
+    const jwks = await jwksResp.json() as { keys?: any[] };
+    const jwk = jwks.keys?.find((key) => key.kid === header.kid);
+    if (!jwk) return false;
+
+    const publicKey = createPublicKey({ key: jwk, format: "jwk" });
+    return verify(
+      "RSA-SHA256",
+      Buffer.from(`${encodedHeader}.${encodedPayload}`),
+      publicKey,
+      base64UrlDecode(encodedSignature),
+    );
+  } catch (error) {
+    console.error("GitHub OIDC cron auth failed", error);
+    return false;
+  }
+}
+
+function base64UrlDecode(value: string) {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  return Buffer.from(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "="), "base64");
+}
+
+async function buildCallDynamicVariables({
+  callId,
+  kind,
+  userId,
+  callSid,
+}: {
+  callId: number;
+  kind: string;
+  userId: string;
+  callSid: string;
+}) {
+  const variables: Record<string, string> = {
+    call_sid: callSid || "",
+    powerwyze_call_id: callId ? String(callId) : "",
+    powerwyze_call_kind: kind || "",
+    powerwyze_user_id: userId || "",
+  };
+
+  const parsedUserId = parseInt(userId || "0", 10);
+  if (!parsedUserId) return variables;
+
+  const user = await storage.getUser(parsedUserId);
+  if (!user) return variables;
+
+  const boards = await storage.listBoardsForUser(user.id);
+  const boardSummaries = [];
+  for (const board of boards) {
+    const cards = await storage.listCards(board.id);
+    const topCards = cards
+      .slice()
+      .sort((a, b) => {
+        const priorityRank: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
+        const aPriority = priorityRank[(a.priority || "").toLowerCase()] ?? 4;
+        const bPriority = priorityRank[(b.priority || "").toLowerCase()] ?? 4;
+        if (aPriority !== bPriority) return aPriority - bPriority;
+        const aDue = a.due_date ? new Date(a.due_date).getTime() : Number.MAX_SAFE_INTEGER;
+        const bDue = b.due_date ? new Date(b.due_date).getTime() : Number.MAX_SAFE_INTEGER;
+        return aDue - bDue;
+      })
+      .slice(0, 3)
+      .map((card) => {
+        const due = card.due_date ? `, due ${card.due_date.slice(0, 10)}` : "";
+        return `${card.title} (${card.priority || "medium"}${due})`;
+      });
+    boardSummaries.push(`${board.name}: ${topCards.join("; ") || "No active cards"}`);
+  }
+
+  variables.powerwyze_user_name = user.name;
+  variables.powerwyze_user_email = user.email;
+  variables.powerwyze_call_type = kind === "eod" ? "end-of-day check-in" : "morning standup";
+  variables.powerwyze_board_context = boardSummaries.join("\n").slice(0, 3500);
+  return variables;
 }
 
 async function runChatAgent({ board, cols, cards, users, message, userId }: any) {
