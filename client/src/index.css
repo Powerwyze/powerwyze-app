@@ -39,7 +39,9 @@ body {
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
@@ -47,7 +49,9 @@ button {
   border: 0;
 }
 
-input {
+input,
+select,
+textarea {
   width: 100%;
   min-height: 44px;
   border: 1px solid var(--line);
@@ -58,12 +62,22 @@ input {
   outline: none;
 }
 
-input:focus {
+textarea {
+  min-height: 92px;
+  resize: vertical;
+  padding: 12px;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
   border-color: rgba(50, 210, 228, 0.75);
   box-shadow: 0 0 0 3px rgba(50, 210, 228, 0.12);
 }
 
-input:disabled {
+input:disabled,
+select:disabled,
+textarea:disabled {
   color: var(--faint);
   cursor: not-allowed;
 }
@@ -418,6 +432,11 @@ label {
   flex: 0 0 auto;
 }
 
+.icon-button.small {
+  width: 30px;
+  height: 30px;
+}
+
 .metric-strip {
   display: grid;
   gap: 12px;
@@ -519,8 +538,30 @@ label {
   background: #101722;
 }
 
+.task-card-title,
+.card-actions,
+.card-move-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.task-card-title {
+  justify-content: space-between;
+}
+
+.task-card-title strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .task-card.priority-high {
   border-left-color: var(--red);
+}
+
+.task-card.priority-urgent {
+  border-left-color: var(--red);
+  box-shadow: inset 0 0 0 1px rgba(255, 107, 114, 0.18);
 }
 
 .task-card.priority-low {
@@ -541,6 +582,26 @@ label {
   justify-content: space-between;
   gap: 10px;
   color: var(--faint);
+}
+
+.card-move-row {
+  padding-top: 4px;
+}
+
+.card-move-row select {
+  min-width: 0;
+  flex: 1;
+}
+
+.card-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.card-editor-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
 }
 
 .call-console {

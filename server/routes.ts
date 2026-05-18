@@ -142,6 +142,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const id = parseInt(req.params.id as string, 10);
     const existing = await storage.getCard(id);
     if (!existing) return res.status(404).json({ message: "Card not found" });
+    const board = await storage.getBoard(existing.board_id);
+    if (!board) return res.status(404).json({ message: "Board not found" });
+    if (board.kind === "personal" && board.owner_id !== req.session.userId) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
     const patch: any = { ...req.body };
     if (patch.dueDate) patch.dueDate = new Date(patch.dueDate);
     const card = await storage.updateCard(id, patch);
@@ -154,12 +159,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (typeof columnId !== "number" || typeof position !== "number") {
       return res.status(400).json({ message: "columnId and position required" });
     }
+    const existing = await storage.getCard(id);
+    if (!existing) return res.status(404).json({ message: "Card not found" });
+    const board = await storage.getBoard(existing.board_id);
+    if (!board) return res.status(404).json({ message: "Board not found" });
+    if (board.kind === "personal" && board.owner_id !== req.session.userId) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const columns = await storage.listColumns(existing.board_id);
+    if (!columns.some((column) => column.id === columnId)) {
+      return res.status(400).json({ message: "Column does not belong to this board" });
+    }
     const card = await storage.moveCard(id, columnId, position);
     res.json({ card });
   });
 
   app.delete("/api/cards/:id", requireAuth, async (req, res) => {
     const id = parseInt(req.params.id as string, 10);
+    const existing = await storage.getCard(id);
+    if (!existing) return res.status(404).json({ message: "Card not found" });
+    const board = await storage.getBoard(existing.board_id);
+    if (!board) return res.status(404).json({ message: "Board not found" });
+    if (board.kind === "personal" && board.owner_id !== req.session.userId) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
     const ok = await storage.deleteCard(id);
     res.json({ ok });
   });
@@ -322,7 +345,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const allUsers = await storage.listUsers();
     const dialed: any[] = [];
     const skipped: any[] = [];
-    const windowMinutes = parseInt(process.env.CALL_SCHEDULE_WINDOW_MINUTES || "10", 10);
+    const windowMinutes = parseInt(process.env.CALL_SCHEDULE_WINDOW_MINUTES || "75", 10);
     for (const u of allUsers) {
       if (!u.phone) continue;
       const timezone = u.timezone || "America/New_York";

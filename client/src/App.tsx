@@ -3,11 +3,14 @@ import {
   ArrowRight,
   Bot,
   CalendarClock,
+  ChevronLeft,
+  ChevronRight,
   CheckCircle2,
   CircleAlert,
   KanbanSquare,
   Loader2,
   LogOut,
+  Pencil,
   Phone,
   Play,
   RefreshCw,
@@ -16,6 +19,7 @@ import {
   Settings,
   ShieldCheck,
   Sparkles,
+  X,
 } from "lucide-react";
 import { Logo } from "@/components/Logo";
 
@@ -446,12 +450,25 @@ function BoardsView() {
           <RefreshCw size={16} />
         </button>
       </div>
-      {detail && <BoardColumns detail={detail} />}
+      {detail && <BoardColumns detail={detail} onRefresh={() => loadBoard(detail.board.slug)} />}
     </section>
   );
 }
 
-function BoardColumns({ detail }: { detail: BoardDetail }) {
+type CardDraft = {
+  title: string;
+  description: string;
+  priority: string;
+  dueDate: string;
+};
+
+function BoardColumns({ detail, onRefresh }: { detail: BoardDetail; onRefresh: () => Promise<void> }) {
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [draft, setDraft] = useState<CardDraft>({ title: "", description: "", priority: "medium", dueDate: "" });
+  const [savingId, setSavingId] = useState<number | null>(null);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
   const cardsByColumn = useMemo(() => {
     const groups = new Map<number, Card[]>();
     for (const card of detail.cards) {
@@ -461,28 +478,161 @@ function BoardColumns({ detail }: { detail: BoardDetail }) {
     return groups;
   }, [detail.cards]);
 
+  function startEdit(card: Card) {
+    setEditingId(card.id);
+    setDraft({
+      title: card.title,
+      description: card.description || "",
+      priority: card.priority || "medium",
+      dueDate: card.due_date ? card.due_date.slice(0, 10) : "",
+    });
+    setMessage("");
+    setError("");
+  }
+
+  async function saveCard(cardId: number) {
+    if (!draft.title.trim()) {
+      setError("Card title is required.");
+      return;
+    }
+    setSavingId(cardId);
+    setError("");
+    setMessage("");
+    try {
+      await api(`/api/cards/${cardId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          title: draft.title.trim(),
+          description: draft.description.trim() || null,
+          priority: draft.priority,
+          dueDate: draft.dueDate || null,
+        }),
+      });
+      setEditingId(null);
+      setMessage("Card updated.");
+      await onRefresh();
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  async function moveCard(card: Card, columnId: number) {
+    if (columnId === card.column_id) return;
+    const destinationCards = cardsByColumn.get(columnId) || [];
+    setSavingId(card.id);
+    setError("");
+    setMessage("");
+    try {
+      await api(`/api/cards/${card.id}/move`, {
+        method: "POST",
+        body: JSON.stringify({ columnId, position: destinationCards.length }),
+      });
+      setMessage("Card moved.");
+      await onRefresh();
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  function adjacentColumnId(card: Card, offset: -1 | 1) {
+    const currentIndex = detail.columns.findIndex((column) => column.id === card.column_id);
+    return detail.columns[currentIndex + offset]?.id || null;
+  }
+
   return (
-    <div className="board-lane-wrap">
-      {detail.columns.map((column) => (
-        <section className="lane" key={column.id}>
-          <header>
-            <strong>{column.name}</strong>
-            <span>{cardsByColumn.get(column.id)?.length || 0}</span>
-          </header>
-          <div className="lane-cards">
-            {(cardsByColumn.get(column.id) || []).map((card) => (
-              <article className={`task-card priority-${card.priority || "medium"}`} key={card.id}>
-                <strong>{card.title}</strong>
-                {card.description && <p>{card.description}</p>}
-                <footer>
-                  <span>{card.source || "manual"}</span>
-                  {card.due_date && <span>{new Date(card.due_date).toLocaleDateString()}</span>}
-                </footer>
-              </article>
-            ))}
-          </div>
-        </section>
-      ))}
+    <div className="stack">
+      {message && <div className="alert success">{message}</div>}
+      {error && <div className="alert danger">{error}</div>}
+      <div className="board-lane-wrap">
+        {detail.columns.map((column) => (
+          <section className="lane" key={column.id}>
+            <header>
+              <strong>{column.name}</strong>
+              <span>{cardsByColumn.get(column.id)?.length || 0}</span>
+            </header>
+            <div className="lane-cards">
+              {(cardsByColumn.get(column.id) || []).map((card) => {
+                const leftColumnId = adjacentColumnId(card, -1);
+                const rightColumnId = adjacentColumnId(card, 1);
+                const isSaving = savingId === card.id;
+                return (
+                  <article className={`task-card priority-${card.priority || "medium"}`} key={card.id}>
+                    {editingId === card.id ? (
+                      <div className="card-editor">
+                        <label>
+                          Title
+                          <input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
+                        </label>
+                        <label>
+                          Description
+                          <textarea value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} />
+                        </label>
+                        <div className="card-editor-grid">
+                          <label>
+                            Priority
+                            <select value={draft.priority} onChange={(event) => setDraft({ ...draft, priority: event.target.value })}>
+                              <option value="low">Low</option>
+                              <option value="medium">Medium</option>
+                              <option value="high">High</option>
+                              <option value="urgent">Urgent</option>
+                            </select>
+                          </label>
+                          <label>
+                            Due
+                            <input type="date" value={draft.dueDate} onChange={(event) => setDraft({ ...draft, dueDate: event.target.value })} />
+                          </label>
+                        </div>
+                        <div className="card-actions">
+                          <button className="secondary-button compact" type="button" disabled={isSaving} onClick={() => saveCard(card.id)}>
+                            {isSaving ? <Loader2 className="spin" size={14} /> : <Save size={14} />}
+                            Save
+                          </button>
+                          <button className="icon-button small" type="button" title="Cancel edit" onClick={() => setEditingId(null)}>
+                            <X size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="task-card-title">
+                          <strong>{card.title}</strong>
+                          <button className="icon-button small" type="button" title="Edit card" onClick={() => startEdit(card)}>
+                            <Pencil size={14} />
+                          </button>
+                        </div>
+                        {card.description && <p>{card.description}</p>}
+                        <footer>
+                          <span>{card.priority || "medium"}</span>
+                          {card.due_date && <span>{new Date(card.due_date).toLocaleDateString()}</span>}
+                        </footer>
+                        <div className="card-move-row">
+                          <button className="icon-button small" type="button" disabled={!leftColumnId || isSaving} title="Move left" onClick={() => leftColumnId && moveCard(card, leftColumnId)}>
+                            {isSaving ? <Loader2 className="spin" size={14} /> : <ChevronLeft size={14} />}
+                          </button>
+                          <select value={card.column_id} disabled={isSaving} onChange={(event) => moveCard(card, Number(event.target.value))}>
+                            {detail.columns.map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.name}
+                              </option>
+                            ))}
+                          </select>
+                          <button className="icon-button small" type="button" disabled={!rightColumnId || isSaving} title="Move right" onClick={() => rightColumnId && moveCard(card, rightColumnId)}>
+                            {isSaving ? <Loader2 className="spin" size={14} /> : <ChevronRight size={14} />}
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        ))}
+      </div>
     </div>
   );
 }
